@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Freedom Blocker</string>
+    <string name="accessibility_service_label">Freedom Blocker</string>
+    <string name="accessibility_service_description">Monitors Chrome, Brave, and Edge browser address bars to block websites matching your keyword list during active sessions.</string>
+    <string name="device_admin_description">Freedom Blocker uses Device Administrator privileges to prevent the app from being uninstalled during an active blocking session.</string>
+
+    <!-- UI strings -->
+    <string name="title_keywords">Blocked Keywords</string>
+    <string name="title_session">Session</string>
+    <string name="hint_keyword">Enter keyword (e.g. youtube, reddit)</string>
+    <string name="btn_add">Add</string>
+    <string name="btn_start_session">Start Session</string>
+    <string name="btn_grant">Grant</string>
+    <string name="label_start_time">Start Time</string>
+    <string name="label_end_time">End Time</string>
+    <string name="label_permissions">Required Permissions</string>
+    <string name="perm_accessibility">Accessibility Service</string>
+    <string name="perm_device_admin">Device Admin</string>
+    <string name="perm_overlay">Draw Over Apps</string>
+    <string name="status_idle">No active session</string>
+    <string name="status_scheduled">Session scheduled</string>
+    <string name="status_active">🔴 Session Active — Blocking Enabled</string>
+    <string name="block_title">Access Blocked</string>
+    <string name="block_message">This site is blocked by Freedom Blocker.\nStay focused — you set this session yourself.</string>
+    <string name="block_btn">Go Back</string>
+    <string name="session_locked_toast">Session is active — cannot be modified.</string>
+    <string name="err_no_keywords">Add at least one keyword before starting a session.</string>
+    <string name="err_invalid_time">End time must be after start time (overnight sessions are supported).</string>
+</resources>

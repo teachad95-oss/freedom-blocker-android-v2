@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark background palette -->
+    <color name="bg_primary">#0A0A0F</color>
+    <color name="bg_surface">#12121C</color>
+    <color name="bg_card">#1A1A2E</color>
+    <color name="bg_card_elevated">#222238</color>
+    <color name="bg_input">#16213E</color>
+
+    <!-- Brand / accent -->
+    <color name="brand_purple">#7C4DFF</color>
+    <color name="brand_purple_light">#B47CFF</color>
+    <color name="brand_purple_dark">#5B34D6</color>
+
+    <!-- Session state colors -->
+    <color name="session_active">#FF4757</color>
+    <color name="session_active_bg">#2A1220</color>
+    <color name="session_scheduled">#FFA502</color>
+    <color name="session_idle">#2ED573</color>
+
+    <!-- Text -->
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#A0A0C0</color>
+    <color name="text_hint">#606080</color>
+
+    <!-- Divider / border -->
+    <color name="divider">#2A2A40</color>
+    <color name="border">#3A3A58</color>
+
+    <!-- Permission status -->
+    <color name="perm_granted">#2ED573</color>
+    <color name="perm_missing">#FF4757</color>
+
+    <!-- Overlay -->
+    <color name="overlay_bg">#E6000000</color>
+    <color name="overlay_card">#1A0A0A18</color>
+
+    <!-- Notification -->
+    <color name="notification_color">#7C4DFF</color>
+</resources>
