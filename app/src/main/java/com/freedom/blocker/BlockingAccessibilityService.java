@@ -1,10 +1,15 @@
 package com.freedom.blocker;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.ActivityManager;
+import android.content.Context;
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.Toast;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -12,15 +17,27 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Accessibility Service that monitors the address bar of Chrome, Brave, and Edge.
- * When a URL contains a blocked keyword during an active session, it triggers
- * a GLOBAL_ACTION_BACK and launches the BlockOverlayActivity.
+ * Accessibility Service that monitors ALL text content in Chrome, Brave, and Edge
+ * (including incognito/private mode). When any visible text contains a blocked
+ * keyword during an active session, the browser is immediately killed.
+ *
+ * Scanning strategy:
+ *   1. Check event text (fastest path — catches URL bar changes, tab titles)
+ *   2. Walk the full accessibility tree scanning every text node and content
+ *      description (catches search queries, page content, URL bar in all modes)
+ *
+ * Blocking strategy:
+ *   1. performGlobalAction(HOME) — immediately leave the browser
+ *   2. killBackgroundProcesses — kill the now-backgrounded browser
+ *   3. If the user reopens the browser and the keyword is still visible,
+ *      the service fires again and kills it again — creating an unbypassable loop
  */
 public class BlockingAccessibilityService extends AccessibilityService {
 
-    private static final String TAG              = "FreedomAccessibility";
-    private static final long   RELOAD_EVERY_MS  = 5_000;   // reload keywords every 5 s
-    private static final long   DEBOUNCE_MS      = 400;      // ignore rapid duplicate events
+    private static final String TAG             = "FreedomAccessibility";
+    private static final long   RELOAD_EVERY_MS = 5_000;
+    private static final long   DEBOUNCE_MS     = 1_500;
+    private static final int    MAX_SCAN_DEPTH  = 20;
 
     private long lastReload = 0;
     private long lastBlock  = 0;
@@ -28,18 +45,9 @@ public class BlockingAccessibilityService extends AccessibilityService {
 
     private SessionManager sessionManager;
     private KeywordStore   keywordStore;
+    private Handler        handler;
 
-    // Exact view IDs for the URL / address bar in each browser
-    private static final Set<String> URL_BAR_IDS = new HashSet<>(Arrays.asList(
-        "com.android.chrome:id/url_bar",
-        "com.android.chrome:id/search_box_text",
-        "com.brave.browser:id/url_bar",
-        "com.brave.browser:id/search_box_text",
-        "com.microsoft.emmx:id/url_bar",
-        "com.microsoft.emmx:id/search_box_text"
-    ));
-
-    // Only observe events from these packages (declared in accessibility_service_config.xml too)
+    // Browser packages — same package is used for normal + incognito/private
     private static final Set<String> TARGET_PACKAGES = new HashSet<>(Arrays.asList(
         "com.android.chrome",
         "com.brave.browser",
@@ -51,21 +59,22 @@ public class BlockingAccessibilityService extends AccessibilityService {
         super.onServiceConnected();
         sessionManager = SessionManager.getInstance(this);
         keywordStore   = KeywordStore.getInstance(this);
+        handler        = new Handler(Looper.getMainLooper());
         reloadKeywords();
-        Log.d(TAG, "Accessibility service connected");
+        Log.d(TAG, "Accessibility service connected — aggressive keyword blocking enabled");
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         long now = System.currentTimeMillis();
 
-        // Debounce – skip if we already processed an event very recently
+        // Debounce — skip if we already blocked very recently
         if (now - lastBlock < DEBOUNCE_MS) return;
 
         // Only act during active sessions
         if (!sessionManager.isSessionActive()) return;
 
-        // Reload keyword list periodically (in case user added one mid-session via another app)
+        // Reload keyword list periodically
         if (now - lastReload > RELOAD_EVERY_MS) {
             reloadKeywords();
             lastReload = now;
@@ -77,35 +86,66 @@ public class BlockingAccessibilityService extends AccessibilityService {
         CharSequence pkg = event.getPackageName();
         if (pkg == null || !TARGET_PACKAGES.contains(pkg.toString())) return;
 
-        // Walk the accessibility tree looking for a URL bar node
+        String packageName = pkg.toString();
+
+        // ── Fast path: check event text directly ──
+        List<CharSequence> eventTexts = event.getText();
+        if (eventTexts != null) {
+            for (CharSequence cs : eventTexts) {
+                if (cs != null) {
+                    String text = cs.toString().toLowerCase();
+                    for (String keyword : keywords) {
+                        if (text.contains(keyword)) {
+                            Log.i(TAG, "BLOCK (event text) keyword=\"" + keyword + "\"");
+                            killBrowser(packageName, keyword);
+                            lastBlock = now;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Deep path: walk the full accessibility tree ──
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
 
-        boolean blocked = scanAndBlock(root);
+        String matched = scanAllText(root, 0);
         root.recycle();
 
-        if (blocked) lastBlock = now;
+        if (matched != null) {
+            Log.i(TAG, "BLOCK (tree scan) keyword=\"" + matched + "\" pkg=" + packageName);
+            killBrowser(packageName, matched);
+            lastBlock = now;
+        }
     }
 
     /**
-     * Recursively scans the node tree.
-     * @return true if a keyword was matched and blocking was triggered.
+     * Recursively scan ALL text nodes in the accessibility tree.
+     * Checks getText() and getContentDescription() on every node.
+     * @return the matched keyword, or null if no match found.
      */
-    private boolean scanAndBlock(AccessibilityNodeInfo node) {
-        if (node == null) return false;
+    private String scanAllText(AccessibilityNodeInfo node, int depth) {
+        if (node == null || depth > MAX_SCAN_DEPTH) return null;
 
-        String viewId = node.getViewIdResourceName();
+        // Check node text
         CharSequence text = node.getText();
-
-        if (viewId != null && URL_BAR_IDS.contains(viewId)
-                && text != null && text.length() > 0) {
-
-            String url = text.toString().toLowerCase();
+        if (text != null && text.length() > 0) {
+            String lower = text.toString().toLowerCase();
             for (String keyword : keywords) {
-                if (url.contains(keyword)) {
-                    Log.i(TAG, "BLOCKING — url=\"" + url + "\" keyword=\"" + keyword + "\"");
-                    triggerBlock(keyword);
-                    return true;
+                if (lower.contains(keyword)) {
+                    return keyword;
+                }
+            }
+        }
+
+        // Check content description (tab titles, image alt text, etc.)
+        CharSequence desc = node.getContentDescription();
+        if (desc != null && desc.length() > 0) {
+            String lower = desc.toString().toLowerCase();
+            for (String keyword : keywords) {
+                if (lower.contains(keyword)) {
+                    return keyword;
                 }
             }
         }
@@ -114,27 +154,49 @@ public class BlockingAccessibilityService extends AccessibilityService {
         for (int i = 0; i < node.getChildCount(); i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
-                if (scanAndBlock(child)) {
+                String result = scanAllText(child, depth + 1);
+                if (result != null) {
                     child.recycle();
-                    return true;
+                    return result;
                 }
                 child.recycle();
             }
         }
-        return false;
+
+        return null;
     }
 
-    private void triggerBlock(String matchedKeyword) {
-        // 1. Navigate back immediately
-        performGlobalAction(GLOBAL_ACTION_BACK);
+    /**
+     * Kill the browser:
+     *   1. Go HOME immediately (browser moves to background)
+     *   2. Kill the browser process
+     *   3. Show a toast explaining what happened
+     */
+    private void killBrowser(String packageName, String matchedKeyword) {
+        // Step 1: Go HOME — this is instant and reliable
+        performGlobalAction(GLOBAL_ACTION_HOME);
 
-        // 2. Show full-screen block overlay
-        Intent intent = new Intent(this, BlockOverlayActivity.class);
-        intent.putExtra(BlockOverlayActivity.EXTRA_KEYWORD, matchedKeyword);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                      | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                      | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        startActivity(intent);
+        // Step 2: Kill the browser process after it moves to background
+        handler.postDelayed(() -> {
+            try {
+                ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+                if (am != null) {
+                    am.killBackgroundProcesses(packageName);
+                    Log.i(TAG, "killBackgroundProcesses: " + packageName);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error killing browser: " + e.getMessage());
+            }
+        }, 500);
+
+        // Step 3: Show toast notification
+        handler.post(() -> {
+            try {
+                Toast.makeText(this,
+                    "Blocked keyword: \"" + matchedKeyword + "\" — browser closed",
+                    Toast.LENGTH_LONG).show();
+            } catch (Exception ignored) {}
+        });
     }
 
     private void reloadKeywords() {
