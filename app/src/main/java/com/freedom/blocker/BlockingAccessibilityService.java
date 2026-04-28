@@ -36,7 +36,7 @@ public class BlockingAccessibilityService extends AccessibilityService {
 
     private static final String TAG             = "FreedomAccessibility";
     private static final long   RELOAD_EVERY_MS = 5_000;
-    private static final long   DEBOUNCE_MS     = 1_500;
+    private static final long   DEBOUNCE_MS     = 500;
     private static final int    MAX_SCAN_DEPTH  = 20;
 
     private long lastReload = 0;
@@ -176,7 +176,15 @@ public class BlockingAccessibilityService extends AccessibilityService {
         // Step 1: Go HOME — this is instant and reliable
         performGlobalAction(GLOBAL_ACTION_HOME);
 
-        // Step 2: Kill the browser process after it moves to background
+        // Step 2: Show full-screen block overlay
+        Intent intent = new Intent(this, BlockOverlayActivity.class);
+        intent.putExtra(BlockOverlayActivity.EXTRA_KEYWORD, matchedKeyword);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                      | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                      | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
+
+        // Step 3: Kill the browser process after it moves to background
         handler.postDelayed(() -> {
             try {
                 ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);

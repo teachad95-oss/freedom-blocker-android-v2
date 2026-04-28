@@ -26,6 +26,9 @@
     <!-- JobScheduler persistence -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Kill browser process on block -->
+    <uses-permission android:name="android.permission.KILL_BACKGROUND_PROCESSES" />
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
