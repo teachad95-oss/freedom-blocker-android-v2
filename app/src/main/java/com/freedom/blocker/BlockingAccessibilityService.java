@@ -18,19 +18,19 @@ import java.util.Set;
 
 /**
  * Accessibility Service that monitors ALL text content in Chrome, Brave, and Edge
- * (including incognito/private mode). When any visible text contains a blocked
- * keyword during an active session, the browser is immediately killed.
+ * (including incognito/private mode). 
  *
  * Scanning strategy:
  *   1. Check event text (fastest path — catches URL bar changes, tab titles)
  *   2. Walk the full accessibility tree scanning every text node and content
  *      description (catches search queries, page content, URL bar in all modes)
  *
- * Blocking strategy:
- *   1. performGlobalAction(HOME) — immediately leave the browser
- *   2. killBackgroundProcesses — kill the now-backgrounded browser
- *   3. If the user reopens the browser and the keyword is still visible,
- *      the service fires again and kills it again — creating an unbypassable loop
+ * Blocking strategy (V4 Auto-Navigation for Android 14+):
+ *   1. Auto-Click Home: Attempt to find and click the browser's Home button
+ *   2. Auto-Back: If no Home button, fire GLOBAL_ACTION_BACK to leave the page/search
+ *   3. Overlay: Launch the BlockOverlayActivity to cover the screen
+ *   4. Minimize: Fire GLOBAL_ACTION_HOME to send the browser to the background
+ *   5. Kill (Fallback): Try killBackgroundProcesses for older Android versions
  */
 public class BlockingAccessibilityService extends AccessibilityService {
 
@@ -61,7 +61,7 @@ public class BlockingAccessibilityService extends AccessibilityService {
         keywordStore   = KeywordStore.getInstance(this);
         handler        = new Handler(Looper.getMainLooper());
         reloadKeywords();
-        Log.d(TAG, "Accessibility service connected — aggressive keyword blocking enabled");
+        Log.d(TAG, "Accessibility connected — V4 auto-navigation blocking enabled");
     }
 
     @Override
@@ -88,6 +88,8 @@ public class BlockingAccessibilityService extends AccessibilityService {
 
         String packageName = pkg.toString();
 
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+
         // ── Fast path: check event text directly ──
         List<CharSequence> eventTexts = event.getText();
         if (eventTexts != null) {
@@ -97,8 +99,9 @@ public class BlockingAccessibilityService extends AccessibilityService {
                     for (String keyword : keywords) {
                         if (text.contains(keyword)) {
                             Log.i(TAG, "BLOCK (event text) keyword=\"" + keyword + "\"");
-                            killBrowser(packageName, keyword);
+                            navigateAwayAndBlock(packageName, keyword, root);
                             lastBlock = now;
+                            if (root != null) root.recycle();
                             return;
                         }
                     }
@@ -107,17 +110,16 @@ public class BlockingAccessibilityService extends AccessibilityService {
         }
 
         // ── Deep path: walk the full accessibility tree ──
-        AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null) return;
 
         String matched = scanAllText(root, 0);
-        root.recycle();
-
         if (matched != null) {
             Log.i(TAG, "BLOCK (tree scan) keyword=\"" + matched + "\" pkg=" + packageName);
-            killBrowser(packageName, matched);
+            navigateAwayAndBlock(packageName, matched, root);
             lastBlock = now;
         }
+        
+        root.recycle();
     }
 
     /**
@@ -167,16 +169,42 @@ public class BlockingAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * Kill the browser:
-     *   1. Go HOME immediately (browser moves to background)
-     *   2. Kill the browser process
-     *   3. Show a toast explaining what happened
+     * Executes the Auto-Navigation blocking strategy
      */
-    private void killBrowser(String packageName, String matchedKeyword) {
-        // Step 1: Go HOME — this is instant and reliable
-        performGlobalAction(GLOBAL_ACTION_HOME);
+    private void navigateAwayAndBlock(String packageName, String matchedKeyword, AccessibilityNodeInfo rootNode) {
+        // 1. Attempt to auto-click the Home button in the browser UI
+        boolean clickedHome = false;
+        if (rootNode != null) {
+            String[] homeIds = {
+                "com.android.chrome:id/home_button",
+                "com.brave.browser:id/bottom_home_button",
+                "com.brave.browser:id/home_button"
+            };
+            for (String id : homeIds) {
+                List<AccessibilityNodeInfo> nodes = rootNode.findAccessibilityNodeInfosByViewId(id);
+                if (nodes != null && !nodes.isEmpty()) {
+                    for (AccessibilityNodeInfo btn : nodes) {
+                        if (btn.isClickable()) {
+                            btn.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+                            clickedHome = true;
+                            Log.i(TAG, "Clicked home button: " + id);
+                            break;
+                        }
+                    }
+                }
+                if (clickedHome) break;
+            }
+        }
 
-        // Step 2: Show full-screen block overlay
+        // 2. If Home button not found/clicked, simulate BACK to exit the blocked search/page
+        if (!clickedHome) {
+            Log.i(TAG, "Home button not found, sending GLOBAL_ACTION_BACK");
+            performGlobalAction(GLOBAL_ACTION_BACK);
+            // Queue a second BACK just to be sure we leave the page
+            handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_BACK), 150);
+        }
+
+        // 3. Launch full-screen block overlay
         Intent intent = new Intent(this, BlockOverlayActivity.class);
         intent.putExtra(BlockOverlayActivity.EXTRA_KEYWORD, matchedKeyword);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
@@ -184,24 +212,24 @@ public class BlockingAccessibilityService extends AccessibilityService {
                       | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         startActivity(intent);
 
-        // Step 3: Kill the browser process after it moves to background
+        // 4. Send the browser to the background
+        handler.postDelayed(() -> performGlobalAction(GLOBAL_ACTION_HOME), 300);
+
+        // 5. Fallback: try to kill background processes (works on Android < 14)
         handler.postDelayed(() -> {
             try {
                 ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
                 if (am != null) {
                     am.killBackgroundProcesses(packageName);
-                    Log.i(TAG, "killBackgroundProcesses: " + packageName);
                 }
-            } catch (Exception e) {
-                Log.e(TAG, "Error killing browser: " + e.getMessage());
-            }
+            } catch (Exception ignored) {}
         }, 500);
 
-        // Step 3: Show toast notification
+        // 6. Show toast notification
         handler.post(() -> {
             try {
                 Toast.makeText(this,
-                    "Blocked keyword: \"" + matchedKeyword + "\" — browser closed",
+                    "Blocked keyword: \"" + matchedKeyword + "\" — auto-navigated away",
                     Toast.LENGTH_LONG).show();
             } catch (Exception ignored) {}
         });
